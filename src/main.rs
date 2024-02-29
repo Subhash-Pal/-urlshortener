@@ -9,7 +9,8 @@ use std::io::BufRead;
 
 
 // Define a structure to hold the URL data sent by the client
-#[derive(Debug, Deserialize)]
+//#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)] // Add Serialize here
 struct UrlData {
     url: String,
 }
@@ -206,4 +207,56 @@ async fn main() -> std::io::Result<()> {
     .bind("127.0.0.1:8080")? // Bind the server to the local address and port 8080
     .run() // Start the server
     .await // Await server termination
+}
+
+/*#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shorten_url() {
+        // Test with a sample original URL
+        let original_url = "https://www.example.com/some/long/url/to/test";
+        let shortened_url = shorten_url(original_url);
+        // Assert that the shortened URL is not empty
+        assert!(!shortened_url.is_empty());
+    }
+}
+
+*/
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test;
+    use actix_web::http::StatusCode;
+
+    #[test]
+    async  fn test_shorten_url() {
+        // Test with a sample original URL
+        let original_url = "https://www.example.com/some/long/url/to/test";
+        let shortened_url = shorten_url(original_url);
+        // Assert that the shortened URL is not empty
+        assert!(!shortened_url.is_empty());
+    }
+
+    #[actix_rt::test]
+    async fn test_send_url() {
+        // Create a test server
+        let mut app = test::init_service(
+            App::new()
+                .route("/send-url", web::post().to(receive_url))
+        )
+        .await;
+
+        // Send a POST request with JSON data to the /send-url endpoint
+        let req = test::TestRequest::post()
+            .uri("/send-url")
+            .set_json(&UrlData { url: "https://www.example.com".to_string() })
+            .to_request();
+        let response = test::call_service(&mut app, req).await;
+
+        // Check if the response is successful (HTTP status code 200 OK)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
