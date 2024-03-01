@@ -1,26 +1,18 @@
-# Use a Rust-based Docker image suitable for cross-compiling to Linux
-FROM ekidd/rust-musl-builder AS builder
+# Use the official slim Rust image for a smaller base
+FROM rust:1.70.0-slim-bullseye
 
 # Set the working directory inside the container
-WORKDIR /usr/src/urlshortner
+WORKDIR /app
 
-# Copy the project files into the container
+# Copy the Cargo.toml and your project source code
+COPY Cargo.toml ./
 COPY . .
 
-# Build the Rust application
+# Install dependencies
+RUN apt-get update && apt-get install -y pkg-config libssl-dev
+
+# Compile the project in release mode
 RUN cargo build --release
 
-# Start a new stage without the build environment
-FROM alpine:latest
-
-# Set the working directory inside the container
-WORKDIR /usr/src/urlshortner
-
-# Copy the compiled binary from the previous stage
-COPY --from=builder /usr/src/urlshortner/target/x86_64-unknown-linux-musl/release/urlshortner .
-
-# Expose the port that the application listens on
-EXPOSE 8080
-
-# Run the application
-CMD ["./urlshortner"]
+# Set the entry point command to run your application
+CMD ["target/release/urlshortner"]
