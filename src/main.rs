@@ -1,262 +1,201 @@
-use actix_web::{web, App, HttpServer, HttpResponse, HttpRequest};
+//use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex};
+
+use std::fs::File;
+use std::io::{ BufRead};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::sync::Mutex;
 use std::collections::HashMap;
+use actix_web::{web, HttpResponse};
+use std::fs::OpenOptions;
+
 use tiny_keccak::{Hasher, Sha3};
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
-use std::io::BufRead;
 
 
-// Define a structure to hold the URL data sent by the client
-//#[derive(Debug, Deserialize)]
-#[derive(Debug, Deserialize, Serialize)] // Add Serialize here
+#[derive(Debug, Deserialize, Serialize)]
 struct UrlData {
     url: String,
 }
 
-// Define a structure to hold the response data with both original and shortened URLs
 #[derive(Debug, Serialize)]
 struct ResponseData {
-    original_url: String,
+    original_url_received: String,
     shortened_url: String,
-    request_count: u32,
+    original_url_retrieved: String,
+    original_url_matches: bool,
+    received_count: u32,
 }
 
-// Global storage for shortened URLs and their request counts (in-memory)
 lazy_static::lazy_static! {
     static ref SHORTENED_URLS: Mutex<HashMap<String, (String, u32)>> = Mutex::new(HashMap::new());
 }
 
-// Handler function for receiving URL data from the client, shortening it if necessary,
-// and dispatching both URLs back
-async fn receive_url(req_body: web::Json<UrlData>) -> HttpResponse {
-    // Extract the URL from the JSON data
-    let original_url = &req_body.url;
-
-    // Clone the storage before acquiring the lock
-    let cloned_storage = {
-        let storage = SHORTENED_URLS.lock().unwrap();
-        storage.clone() // Clone the storage
-    };
-
-    // Check if the original URL already exists in storage
-    let mut storage = SHORTENED_URLS.lock().unwrap();
-    let entry = storage.entry(original_url.clone());
-    let (shortened_url, request_count) = entry.or_insert_with(|| {
-        // Generate a short URL identifier using the original URL
-        let shortened_url = shorten_url(original_url);
-        (shortened_url.clone(), 0)
-    });
-
-    // Increment the request count
-    *request_count += 1;
-
-    // Save the updated storage to the file
-    if let Err(err) = save_shortened_urls(&cloned_storage) {
-        eprintln!("Failed to save shortened URLs data: {}", err);
-    }
-
-    // Construct the response data with both original and shortened URLs
-    let response_data = ResponseData {
-        original_url: original_url.clone(),
-        shortened_url: shortened_url.clone(), // Use the shortened URL from storage
-        request_count: *request_count,
-    };
-
-    // Return the response with the original and shortened URLs
-    HttpResponse::Ok().json(response_data)
-}
-
-// Function to generate a short URL identifier from the original URL
-fn shorten_url(original_url: &str) -> String {
-    let mut hasher = Sha3::v256(); // Use the Sha3 hasher
-    let mut result = [0u8; 32];
-    hasher.update(original_url.as_bytes());
-    hasher.finalize(&mut result);
-
-    let mut short_url = String::new();
-    for byte in result.iter().take(6) {
-        short_url.push_str(&format!("{:02x}", byte));
-    }
-
-    short_url
-}
-
-// Handler function for redirecting to the original URL
-async fn redirect_to_original(req: HttpRequest) -> HttpResponse {
-    let short_url = req.match_info().get("short_url").unwrap_or("");
-
-    // Look up the original URL corresponding to the short URL
-    let storage = SHORTENED_URLS.lock().unwrap();
-    if let Some((_original_url, request_count)) = storage.get(short_url) {
-        return HttpResponse::Ok().json(ResponseData {
-            original_url: "".to_string(),
-            shortened_url: short_url.to_string(),
-            request_count: *request_count,
-        });
-    }
-
-    HttpResponse::NotFound().finish()
-}
-
-// Define a structure to hold the response data for the metrics API
-#[derive(Debug, Serialize)]
-struct MetricsData {
-    domain: String,
-    count: u32,
-}
-
-// Handler function for the metrics API
-async fn get_metrics() -> HttpResponse {
-    // Lock the storage to access the shortened URLs and their request counts
-    let storage = SHORTENED_URLS.lock().unwrap();
-
-    // Create a HashMap to store the counts for each domain
-    let mut domain_counts: HashMap<String, u32> = HashMap::new();
-
-    // Iterate through the storage and count the occurrences of each domain
-    for (url, entry) in storage.iter() {
-        let (_shortened_url, count) = entry;
-        // Parse the domain from the URL
-        let domain = match url.split_once("://") {
-            Some((_, remainder)) => {
-                match remainder.split_once("/") {
-                    Some((domain, _)) => domain.to_string(),
-                    None => continue, // Skip URLs without a domain
-                }
-            }
-            None => continue, // Skip invalid URLs
-        };
-
-        // Update the count for the domain
-        *domain_counts.entry(domain).or_insert(0) += *count;
-    }
-
-    // Sort the domain counts by their counts in descending order
-    let mut sorted_counts: Vec<_> = domain_counts.iter().collect();
-    sorted_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(*count));
-
-    // Get the top 3 domain names with the highest counts
-    let top_domains: Vec<_> = sorted_counts.iter().take(3).map(|&(domain, &count)| MetricsData {
-        domain: domain.clone(),
-        count,
-    }).collect();
-
-    // Return the top domains as JSON response
-    HttpResponse::Ok().json(top_domains)
-}
-
-// Function to save the shortened URLs data to a file
-fn save_shortened_urls(storage: &HashMap<String, (String, u32)>) -> std::io::Result<()> {
-    let file = File::create("shortened_urls.txt")?;
+fn save_top_urls(urls: Vec<(String, u32)>) -> std::io::Result<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .truncate(true)  // Truncate the file before writing
+        .create(true)
+        .open("top_urls.txt")?;
     let mut writer = BufWriter::new(file);
 
-    for (url, (shortened_url, count)) in storage.iter() {
-        writeln!(writer, "{}:{}:{}", url, shortened_url, count)?;
+    for (url, count) in urls {
+        writeln!(writer, "{}:{}", url, count)?;
     }
 
     Ok(())
 }
 
-// Function to load the shortened URLs data from a file
-// Function to load the shortened URLs data from a file
-fn load_shortened_urls() -> std::io::Result<HashMap<String, (String, u32)>> {
-    let file = match File::open("shortened_urls.txt") {
-        Ok(file) => file,
-        Err(_) => return Ok(HashMap::new()), // Return an empty HashMap if the file doesn't exist
-    };
-    let reader = BufReader::new(file);
 
-    let mut storage = HashMap::new();
+async fn shorten_and_retrieve_url(req_body: web::Json<UrlData>) -> HttpResponse {
+    let original_url_received = req_body.url.clone();
+    let mut storage = SHORTENED_URLS.lock().unwrap();
+
+    let shortened_url_key = {
+        let mut hasher = Sha3::v256();
+        hasher.update(original_url_received.as_bytes());
+        let mut result = [0u8; 32];
+        hasher.finalize(&mut result);
+
+        let mut shortened_url = String::new();
+        for byte in result.iter().take(6) {
+            shortened_url.push_str(&format!("{:02x}", byte));
+        }
+        shortened_url
+    };
+
+    if let Some((_, request_count)) = storage.get_mut(&shortened_url_key) {
+        *request_count += 1;  
+
+        println!("URL already exists. Count: {}", *request_count); // Debug output
+
+        return HttpResponse::Ok().json(ResponseData {
+            original_url_received: original_url_received.clone(),
+            shortened_url: shortened_url_key.clone(),
+            original_url_retrieved: original_url_received.clone(),
+            original_url_matches: true,
+            received_count: *request_count,
+        });
+    }
+
+    storage.insert(shortened_url_key.clone(), (original_url_received.clone(), 1));
+
+    println!("New URL inserted. Count: 1"); // Debug output
+
+    HttpResponse::Ok().json(ResponseData {
+        original_url_received: original_url_received.clone(),
+        shortened_url: shortened_url_key.clone(),
+        original_url_retrieved: original_url_received.clone(),
+        original_url_matches: true,
+        received_count: 1, // This value is changed to *request_count
+    })
+}
+
+async fn retrieve_original_url(req_body: web::Json<UrlData>) -> HttpResponse {
+    let shortened_url_received = req_body.url.clone();
+    let mut storage = SHORTENED_URLS.lock().unwrap();
+
+    println!("Stored shortened URLs: {:?}", storage.keys()); // Debug output
+
+    // Check if the shortened URL exists in the storage
+    if let Some((_original_url, count)) = storage.get_mut(&shortened_url_received) {
+        println!("Found shortened URL in storage: {:?}", shortened_url_received);
+        // Increment the request count
+        *count += 1;
+        println!("Incremented count: {}", *count); // Debug output
+
+        // Retrieve the count after updating
+        let request_count = *count;
+
+        let (original_url, _) = storage.get(&shortened_url_received).unwrap();
+        return HttpResponse::Ok().json(ResponseData {
+            original_url_received: original_url.clone(),
+            shortened_url: shortened_url_received.clone(),
+            original_url_retrieved: original_url.clone(),
+            original_url_matches: true,
+            received_count: request_count,
+        });
+    } else {
+        println!("Shortened URL not found: {:?}", shortened_url_received);
+        // Insert the shortened URL with an initial count of 1
+        storage.insert(shortened_url_received.clone(), (req_body.url.clone(), 1));
+
+        // Retrieve the count after insertion
+        let request_count = 1;
+
+        let (original_url, _) = storage.get(&shortened_url_received).unwrap();
+        return HttpResponse::Ok().json(ResponseData {
+            original_url_received: original_url.clone(),
+            shortened_url: shortened_url_received.clone(),
+            original_url_retrieved: original_url.clone(),
+            original_url_matches: true,
+            received_count: request_count,
+        });
+    }
+}
+
+fn load_top_urls() -> std::io::Result<()> {
+    let file = File::open("top_urls.txt")?;
+    let reader = BufReader::new(file);
+    let mut storage = SHORTENED_URLS.lock().unwrap();
 
     for line in reader.lines() {
         let line = line?;
-        let parts: Vec<_> = line.split(':').collect();
-        if parts.len() == 3 {
-            let url = parts[0].to_string();
-            let shortened_url = parts[1].to_string();
-            let count = parts[2].parse().unwrap_or(0);
-            storage.insert(url, (shortened_url, count));
+        if let Some(index) = line.rfind(':') {
+            let (url, count_str) = line.split_at(index);
+            let url = url.trim();
+            let count_str = &count_str[1..].trim(); // Skip the colon and trim whitespace
+            println!("URL: '{}', Count: '{}'", url, count_str); // Debug output
+            let count = count_str.parse().unwrap_or(0);
+            println!("Parsed count: {}", count); // Debug output
+            storage.insert(url.to_string(), (url.to_string(), count)); // Store the URL along with its count
         }
     }
 
-    Ok(storage)
+    Ok(())
 }
+
+
+fn get_top_urls(storage: &Mutex<HashMap<String, (String, u32)>>) -> Vec<(String, u32)> {
+    let storage = storage.lock().unwrap();
+    let mut url_counts: Vec<_> = storage.iter()
+        .map(|(_, (original_url, count))| (original_url.clone(), *count))
+        .collect();
+
+    url_counts.sort_by_key(|&(_, count)| std::cmp::Reverse(count)); // Sort by count in descending order
+
+    println!("URL Counts: {:?}", url_counts); // Debug output
+
+    url_counts.into_iter().take(3).collect()
+}
+
+
+async fn top_urls() -> HttpResponse {
+    let top_urls = get_top_urls(&SHORTENED_URLS);
+    println!("Top URLs: {:?}", top_urls); // Debug output
+
+    if let Err(err) = save_top_urls(top_urls.clone()) {
+        eprintln!("Failed to save top URLs: {}", err);
+    }
+
+    HttpResponse::Ok().json(top_urls)
+}
+
+
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load the shortened URLs data from the file
-    let initial_storage = load_shortened_urls().unwrap_or_else(|err| {
-        eprintln!("Failed to load shortened URLs data: {}", err);
-        HashMap::new()
-    });
+     // Load top URLs from file when program starts
+     load_top_urls()?;
 
-    // Initialize the global storage with the loaded data
-    *SHORTENED_URLS.lock().unwrap() = initial_storage;
 
-    HttpServer::new(|| {
-        App::new()
-            // Define a route for handling POST requests
-            .route("/send-url", web::post().to(receive_url))
-            // Define a route for redirection
-            .route("/redirect/{short_url}", web::get().to(redirect_to_original))
-            // Define a route for the metrics API
-            .route("/metrics", web::get().to(get_metrics))
+    actix_web::HttpServer::new(|| {
+        actix_web::App::new()
+            .route("/shorten-and-retrieve-url", web::post().to(shorten_and_retrieve_url))
+            .route("/retrieve-original-url", web::post().to(retrieve_original_url))
+            .route("/top-urls", web::get().to(top_urls))
     })
-    .bind("127.0.0.1:8080")? // Bind the server to the local address and port 8080
-    .run() // Start the server
-    .await // Await server termination
-}
-
-/*#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_shorten_url() {
-        // Test with a sample original URL
-        let original_url = "https://www.example.com/some/long/url/to/test";
-        let shortened_url = shorten_url(original_url);
-        // Assert that the shortened URL is not empty
-        assert!(!shortened_url.is_empty());
-    }
-}
-
-*/
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use actix_web::test;
-    use actix_web::http::StatusCode;
-
-    #[test]
-    async  fn test_shorten_url() {
-        // Test with a sample original URL
-        let original_url = "https://www.example.com/some/long/url/to/test";
-        let shortened_url = shorten_url(original_url);
-        // Assert that the shortened URL is not empty
-        assert!(!shortened_url.is_empty());
-    }
-
-    #[actix_rt::test]
-    async fn test_send_url() {
-        // Create a test server
-        let mut app = test::init_service(
-            App::new()
-                .route("/send-url", web::post().to(receive_url))
-        )
-        .await;
-
-        // Send a POST request with JSON data to the /send-url endpoint
-        let req = test::TestRequest::post()
-            .uri("/send-url")
-            .set_json(&UrlData { url: "https://www.example.com".to_string() })
-            .to_request();
-        let response = test::call_service(&mut app, req).await;
-
-        // Check if the response is successful (HTTP status code 200 OK)
-        assert_eq!(response.status(), StatusCode::OK);
-    }
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
