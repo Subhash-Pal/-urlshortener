@@ -5,6 +5,7 @@
 Input : 
 
 #PUT  127.0.0.1:8080/shorten-and-retrieve-url  { "url": "https://C.wand.ai/saved-wandys?tab=llm-zoo" } // To send URL
+
 {
     "original_url_received": "https://coderprog.com",
     "shortened_url": "844c01eb2e56",
@@ -15,7 +16,9 @@ Input :
  
 # To get orignal URL back from shortner hashcode 
 
-#POST 127.0.0.1:8080/retrieve-original-url   Body { "url": "844c01eb2e56" }          "shorten URL Hash code"  Will return Orignal URL 
+#POST 127.0.0.1:8080/retrieve-original-url  
+
+Body { "url": "844c01eb2e56" }          "shorten URL Hash code"  Will return Orignal URL 
 
 Output : 
     "original_url_received": "https://coderprog.com",
