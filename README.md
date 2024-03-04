@@ -4,7 +4,7 @@
 
 Input : 
 
-#PUT  127.0.0.1:8080/shorten-and-retrieve-url  { "url": "https://C.wand.ai/saved-wandys?tab=llm-zoo" } 
+#PUT  127.0.0.1:8080/shorten-and-retrieve-url  { "url": "https://coderprog.com"" } 
 
 // To send URL
 
