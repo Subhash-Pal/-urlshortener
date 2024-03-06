@@ -17,7 +17,7 @@ struct UrlData {
     url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ResponseData {
     original_url_received: String,
     shortened_url: String,
@@ -45,12 +45,26 @@ fn save_top_urls(urls: Vec<(String, u32)>) -> std::io::Result<()> {
     Ok(())
 }
 
+fn generate_shortened_url_key(original_url: &str) -> String {
+    let mut hasher = Sha3::v256();
+    hasher.update(original_url.as_bytes());
+    let mut result = [0u8; 32];
+    hasher.finalize(&mut result);
+
+    let mut shortened_url = String::new();
+    for byte in result.iter().take(6) {
+        shortened_url.push_str(&format!("{:02x}", byte));
+    }
+
+    shortened_url
+}
+
 
 async fn shorten_and_retrieve_url(req_body: web::Json<UrlData>) -> HttpResponse {
     let original_url_received = req_body.url.clone();
     let mut storage = SHORTENED_URLS.lock().unwrap();
 
-    let shortened_url_key = {
+    /* let shortened_url_key = {
         let mut hasher = Sha3::v256();
         hasher.update(original_url_received.as_bytes());
         let mut result = [0u8; 32];
@@ -62,7 +76,8 @@ async fn shorten_and_retrieve_url(req_body: web::Json<UrlData>) -> HttpResponse 
         }
         shortened_url
     };
-
+ */
+    let shortened_url_key=generate_shortened_url_key(&original_url_received);
     if let Some((_, request_count)) = storage.get_mut(&shortened_url_key) {
         *request_count += 1;  
 
@@ -180,9 +195,6 @@ async fn top_urls() -> HttpResponse {
     HttpResponse::Ok().json(top_urls)
 }
 
-
-
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
      // Load top URLs from file when program starts
@@ -198,4 +210,37 @@ async fn main() -> std::io::Result<()> {
     .bind("127.0.0.1:8080")?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{App,test};
+
+    #[actix_rt::test]
+    async fn test_shorten_and_retrieve_url() {
+        // Create a test app
+        let mut app = test::init_service(
+            App::new()
+                .route("/shorten-and-retrieve-url", web::post().to(shorten_and_retrieve_url))
+        )
+        .await;
+
+        // Make a POST request to the endpoint
+        let req_body = UrlData { url: "https://coderprog.com".to_string() };
+        let req = test::TestRequest::post()
+            .uri("/shorten-and-retrieve-url")
+            .set_json(&req_body)
+            .to_request();
+        let resp = test::call_service(&mut app, req).await;
+
+        // Check if the response is successful
+        assert!(resp.status().is_success());
+
+        // Parse the response body and verify its contents
+        let body = test::read_body(resp).await;
+        let response_data: ResponseData = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response_data.original_url_received, "https://coderprog.com");
+        // Add more assertions as needed
+    }
 }
